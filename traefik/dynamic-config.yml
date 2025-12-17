@@ -26,8 +26,6 @@ http:
           - "X-User-ID"
           - "X-User-Role"
           - "X-Auth-Time"
-        # Preserve request method when forwarding to auth service
-        preserveRequestMethod: true
         # Trust X-Forwarded-* headers
         trustForwardHeader: false
 
