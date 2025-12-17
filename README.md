@@ -1,317 +1,152 @@
 # Traefik Forward Auth POC
 
-This is a proof of concept (POC) demonstrating Traefik's Forward Auth middleware feature. The implementation includes two services: an authentication service and a book service, where requests to the book service are intercepted and authenticated by the auth service using Traefik's forward auth middleware.
+A proof of concept demonstrating Traefik's Forward Auth middleware with two microservices: an authentication service and a protected book service.
 
-## Architecture
+## Table of Contents
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Token Format & Access Levels](#token-format--access-levels)
+- [Usage Examples](#usage-examples)
+- [API Reference](#api-reference)
+- [Make Commands](#make-commands)
+- [Troubleshooting](#troubleshooting)
+- [Security Notes](#security-notes)
 
-```
-Client Request
-     |
-     v
-[Traefik Proxy]
-     |
-     |---> [Auth Service] (validates token, enriches headers, logs access)
-     |           |
-     |           v
-     |      (returns 200 OK with headers)
-     |
-     v
-[Book Service] (receives enriched headers, returns filtered data)
-```
+## Quick Start
 
-## Components
-
-### 1. Auth Service (Port 8081)
-- **Purpose**: Validates access tokens and authenticates requests
-- **Features**:
-  - Token validation (Bearer token format)
-  - Request header enrichment (adds user ID, role, and auth time)
-  - Access logging (records all authentication attempts)
-  
-- **Endpoints**:
-  - `POST /auth` - Forward auth endpoint (called by Traefik)
-  - `GET /access-logs` - View all access logs
-  - `GET /health` - Health check
-
-### 2. Book Service (Port 8082)
-- **Purpose**: Protected resource that returns books based on user access level
-- **Features**:
-  - Role-based access control (public, user, admin)
-  - Reads enriched headers from auth service
-  - Returns filtered book data based on user role
-
-- **Endpoints**:
-  - `GET /books` - Get books (requires authentication)
-  - `GET /health` - Health check
-
-### 3. Traefik (Port 80, Dashboard 8080)
-- **Purpose**: Reverse proxy with forward auth middleware
-- **Features**:
-  - Routes requests to appropriate services
-  - Intercepts book service requests for authentication
-  - Forwards enriched headers to backend services
-  - Dashboard for monitoring
-
-## Token Format
-
-The auth service expects tokens in the following format:
-
-```
-Authorization: Bearer <userID>:<role>:<token>
-```
-
-**Examples**:
-- `Authorization: Bearer user123:admin:secret-token`
-- `Authorization: Bearer alice:user:secret-token`
-- `Authorization: Bearer bob:guest:secret-token`
-
-**Valid token**: `secret-token`
-
-## Access Levels
-
-| Role | Public Books | User Books | Admin Books |
-|------|--------------|------------|-------------|
-| admin | ✅ | ✅ | ✅ |
-| user | ✅ | ✅ | ❌ |
-| guest | ✅ | ❌ | ❌ |
-| unknown | ✅ | ❌ | ❌ |
-
-## Testing
-
-### Unit Tests
-
-Run unit tests for both services:
+### 1. Start Services
 
 ```bash
-make test-unit
+# Start services
+docker-compose up -d
 # or
-./run-tests.sh
+make up
 ```
 
-Run tests for individual services:
+Wait ~5 seconds for services to initialize.
+
+### 2. Test Authentication
 
 ```bash
-# Auth service only
-make test-auth
+# Admin (sees all 6 books)
+curl http://localhost/books \
+  -H "Authorization: Bearer admin:admin:secret-token"
 
-# Book service only
-make test-book
+# User (sees 4 books: public + user)
+curl http://localhost/books \
+  -H "Authorization: Bearer alice:user:secret-token"
+
+# Guest (sees 2 books: public only)
+curl http://localhost/books \
+  -H "Authorization: Bearer bob:guest:secret-token"
+
+# No auth (fails with 401)
+curl http://localhost/books
 ```
 
-**Test Coverage:**
-- Auth Service: 72.3%
-- Book Service: 59.4%
-
-See [TESTING.md](TESTING.md) for detailed test documentation.
-
-### Integration Tests
-
-Run integration tests with Docker:
+### 3. View Access Logs
 
 ```bash
-make test
-# or
-./test.sh
+curl http://localhost/access-logs | jq
 ```
 
-### All Tests
+### 4. Traefik Dashboard
 
-Run both unit and integration tests:
+Open: http://localhost:8080
 
-```bash
-make test-all
-```
-
-## Setup and Run
-
-### Prerequisites
-- Docker
-- Docker Compose
-- Go 1.23+ (for running tests locally)
-
-### Start the Services
-
-```bash
-# Build and start all services
-docker-compose up --build
-
-# Or run in detached mode
-docker-compose up --build -d
-```
-
-### Stop the Services
+### 5. Stop Services
 
 ```bash
 docker-compose down
+# or
+make down
 ```
 
-## Usage Examples
+## Architecture
 
-### 1. Request without Authentication (should fail)
+### System Overview
 
-```bash
-curl -v http://localhost/books
+```
+Client
+  ↓
+[Traefik :80]
+  ↓
+  ├─→ [Auth Service :8081] ──→ Validate Token
+  │                            ↓
+  │                    Enrich Headers (X-User-ID, X-User-Role, X-Auth-Time)
+  │                            ↓
+  └─→ [Book Service :8082] ──→ Filter Books by Role
+                               ↓
+                        Return Filtered Data
 ```
 
-**Expected Response**: `401 Unauthorized`
+**Flow:** Client → Traefik → Auth Service (validates) → Book Service (filtered data)
 
-### 2. Request with Admin Token
+**Services:**
+- **Traefik** (Port 80, 8080) - Reverse proxy with forward auth
+- **Auth Service** (Port 8081) - Token validation, header enrichment, access logging
+- **Book Service** (Port 8082) - Role-based book filtering
 
-```bash
-curl -v http://localhost/books \
-  -H "Authorization: Bearer admin:admin:secret-token"
-```
+### Request Flow
 
-**Expected Response**: All books (public, user, and admin books)
+#### Successful Authentication
 
-```json
-{
-  "access_level": "admin",
-  "auth_time": "2025-12-17T10:30:00Z",
-  "books": [
-    {"id": "1", "title": "Public Book 1", "author": "Author A", "access": "public"},
-    {"id": "2", "title": "Public Book 2", "author": "Author B", "access": "public"},
-    {"id": "3", "title": "User Book 1", "author": "Author C", "access": "user"},
-    {"id": "4", "title": "User Book 2", "author": "Author D", "access": "user"},
-    {"id": "5", "title": "Admin Book 1", "author": "Author E", "access": "admin"},
-    {"id": "6", "title": "Admin Book 2", "author": "Author F", "access": "admin"}
-  ],
-  "role": "admin",
-  "total_books": 6,
-  "user_id": "admin"
-}
-```
+1. **Client Request**
+   ```
+   GET /books
+   Authorization: Bearer admin:admin:secret-token
+   ```
 
-### 3. Request with User Token
+2. **Traefik Forward Auth**
+   - Intercepts request
+   - Forwards to `auth-service:8081/auth`
+   - Adds X-Forwarded-* headers
 
-```bash
-curl -v http://localhost/books \
-  -H "Authorization: Bearer alice:user:secret-token"
-```
+3. **Auth Service**
+   - Validates token (`secret-token`)
+   - Logs access attempt
+   - Returns 200 OK with headers:
+     - `X-User-ID: admin`
+     - `X-User-Role: admin`
+     - `X-Auth-Time: 2025-12-17T...`
 
-**Expected Response**: Public and user books only
+4. **Traefik Header Copy**
+   - Copies enriched headers from auth response
+   - Forwards original request to book service
 
-```json
-{
-  "access_level": "user",
-  "auth_time": "2025-12-17T10:31:00Z",
-  "books": [
-    {"id": "1", "title": "Public Book 1", "author": "Author A", "access": "public"},
-    {"id": "2", "title": "Public Book 2", "author": "Author B", "access": "public"},
-    {"id": "3", "title": "User Book 1", "author": "Author C", "access": "user"},
-    {"id": "4", "title": "User Book 2", "author": "Author D", "access": "user"}
-  ],
-  "role": "user",
-  "total_books": 4,
-  "user_id": "alice"
-}
-```
+5. **Book Service**
+   - Reads `X-User-Role` header
+   - Filters books by role
+   - Returns filtered data
 
-### 4. Request with Guest Token
+6. **Response**
+   ```json
+   {
+     "user_id": "admin",
+     "role": "admin",
+     "total_books": 6,
+     "books": [...]
+   }
+   ```
 
-```bash
-curl -v http://localhost/books \
-  -H "Authorization: Bearer bob:guest:secret-token"
-```
+#### Failed Authentication
 
-**Expected Response**: Public books only
+1. Client sends invalid/missing token
+2. Traefik forwards to auth service
+3. Auth service returns 401
+4. Traefik returns 401 to client (book service never called)
 
-```json
-{
-  "access_level": "guest",
-  "auth_time": "2025-12-17T10:32:00Z",
-  "books": [
-    {"id": "1", "title": "Public Book 1", "author": "Author A", "access": "public"},
-    {"id": "2", "title": "Public Book 2", "author": "Author B", "access": "public"}
-  ],
-  "role": "guest",
-  "total_books": 2,
-  "user_id": "bob"
-}
-```
+### Components
 
-### 5. View Access Logs
+#### Traefik
 
-```bash
-curl http://localhost/access-logs
-```
+**Static Config** (`traefik.yml`):
+- Entry points (port 80)
+- Dashboard (port 8080)
+- File provider
 
-**Expected Response**: List of all authentication attempts
-
-```json
-{
-  "logs": [
-    {
-      "timestamp": "2025-12-17T10:30:00Z",
-      "method": "GET",
-      "uri": "/books",
-      "forwarded_for": "172.18.0.1",
-      "user_id": "admin",
-      "role": "admin"
-    },
-    {
-      "timestamp": "2025-12-17T10:31:00Z",
-      "method": "GET",
-      "uri": "/books",
-      "forwarded_for": "172.18.0.1",
-      "user_id": "alice",
-      "role": "user"
-    }
-  ],
-  "total_requests": 2
-}
-```
-
-### 6. Direct Access to Auth Service (bypassing Traefik)
-
-```bash
-# Health check
-curl http://localhost:8081/health
-
-# Access logs
-curl http://localhost:8081/access-logs
-```
-
-### 7. Direct Access to Book Service (bypassing Traefik - no auth)
-
-```bash
-curl http://localhost:8082/books
-```
-
-**Note**: Direct access bypasses authentication. In production, services should only be accessible through Traefik.
-
-## Traefik Dashboard
-
-Access the Traefik dashboard at:
-```
-http://localhost:8080
-```
-
-Here you can monitor:
-- Active routers
-- Configured middlewares
-- Services status
-- Request metrics
-
-## How Forward Auth Works
-
-1. **Client Request**: Client sends a request to `http://localhost/books` with Authorization header
-2. **Traefik Intercept**: Traefik intercepts the request and applies the `auth-middleware`
-3. **Forward to Auth**: Traefik forwards the request to `http://auth-service:8081/auth` with X-Forwarded-* headers
-4. **Authentication**: Auth service validates the token:
-   - If invalid: returns 401, Traefik returns 401 to client
-   - If valid: returns 200 with enriched headers (X-User-ID, X-User-Role, X-Auth-Time)
-5. **Access Logging**: Auth service logs the access attempt
-6. **Header Enrichment**: Traefik copies the headers from auth response
-7. **Forward to Backend**: Traefik forwards the original request to book service with enriched headers
-8. **Response**: Book service filters books based on role and returns the response
-
-## Configuration Details
-
-### Traefik Dynamic Configuration
-
-The forward auth middleware is configured in `traefik/dynamic-config.yml`:
-
+**Dynamic Config** (`dynamic-config.yml`):
 ```yaml
 middlewares:
   auth-middleware:
@@ -324,109 +159,505 @@ middlewares:
       preserveRequestMethod: true
 ```
 
-### Key Configuration Options
-
+**Key Configuration Options:**
 - **address**: URL of the authentication service
 - **authResponseHeaders**: Headers to copy from auth response to forwarded request
 - **preserveRequestMethod**: Preserve original HTTP method when forwarding to auth service
 
-## Testing Different Scenarios
+#### Auth Service
 
-### Test Invalid Token
+**Functions:**
+- Token validation (Bearer format)
+- Access logging (in-memory)
+- Header enrichment
 
+**Endpoints:**
+- `POST /auth` - ForwardAuth endpoint
+- `GET /access-logs` - View logs
+- `GET /health` - Health check
+
+#### Book Service
+
+**Functions:**
+- Role-based filtering
+- 6 books: 2 public, 2 user, 2 admin
+
+**Access Matrix:**
+| Role  | Public (2) | User (2) | Admin (2) | Total |
+|-------|-----------|----------|-----------|-------|
+| admin | ✅        | ✅       | ✅        | 6     |
+| user  | ✅        | ✅       | ❌        | 4     |
+| other | ✅        | ❌       | ❌        | 2     |
+
+**Endpoints:**
+- `GET /books` - Get filtered books
+- `GET /health` - Health check
+
+### Network Architecture
+
+```
+Docker Network: poc-network
+  │
+  ├─ Traefik
+  │   Ports: 80 (proxy), 8080 (dashboard)
+  │
+  ├─ Auth Service
+  │   Port: 8081
+  │   Internal: auth-service:8081
+  │
+  └─ Book Service
+      Port: 8082
+      Internal: book-service:8082
+```
+
+### Technologies
+
+- **Traefik v3.0** - Reverse proxy
+- **Go 1.23** - Services language
+- **Docker** - Containerization
+- **Alpine Linux** - Base image
+
+## Project Structure
+
+```
+poc-forward-auth/
+├── auth-service/           # Authentication service (Go)
+│   ├── main.go            # Token validation, logging
+│   ├── main_test.go       # Unit tests (72.3% coverage)
+│   ├── Dockerfile
+│   └── go.mod
+├── book-service/          # Book service (Go)
+│   ├── main.go           # Role-based filtering
+│   ├── main_test.go      # Unit tests (59.4% coverage)
+│   ├── Dockerfile
+│   └── go.mod
+├── traefik/
+│   ├── traefik.yml       # Static config
+│   └── dynamic-config.yml # Routes & middleware
+├── docker-compose.yml     # Service orchestration
+├── Makefile              # Convenient commands
+├── test.sh               # Integration tests
+└── run-tests.sh          # Unit tests
+```
+
+## Token Format & Access Levels
+
+**Format:** `Authorization: Bearer <userID>:<role>:secret-token`
+
+**Valid token:** `secret-token`
+
+**Examples:**
+- Admin: `Bearer admin:admin:secret-token` → 6 books (all)
+- User: `Bearer alice:user:secret-token` → 4 books (public + user)
+- Guest: `Bearer bob:guest:secret-token` → 2 books (public only)
+
+## Testing
+
+### Unit Tests
+
+```bash
+# Run all unit tests
+make test-unit
+# or
+./run-tests.sh
+
+# Auth service only
+make test-auth
+
+# Book service only
+make test-book
+```
+
+### Integration Tests
+
+```bash
+# Run integration tests with Docker
+make test
+# or
+./test.sh
+```
+
+## Usage Examples
+
+### Authentication Tests
+
+#### ✅ Valid Admin Token
+```bash
+curl -v http://localhost/books \
+  -H "Authorization: Bearer admin:admin:secret-token"
+```
+**Expected**: 200 OK, returns all 6 books
+
+#### ✅ Valid User Token
+```bash
+curl -v http://localhost/books \
+  -H "Authorization: Bearer alice:user:secret-token"
+```
+**Expected**: 200 OK, returns 4 books (public + user)
+
+#### ✅ Valid Guest Token
+```bash
+curl -v http://localhost/books \
+  -H "Authorization: Bearer bob:guest:secret-token"
+```
+**Expected**: 200 OK, returns 2 books (public only)
+
+#### ❌ Invalid Token
 ```bash
 curl -v http://localhost/books \
   -H "Authorization: Bearer user:admin:wrong-token"
 ```
+**Expected**: 401 Unauthorized
 
-**Expected**: `401 Unauthorized`
-
-### Test Missing Token
-
+#### ❌ Missing Token
 ```bash
-curl -v http://localhost/books
+curl http://localhost/books
+```
+**Expected**: 401 Unauthorized
+
+#### ❌ Malformed Token
+```bash
+curl -v http://localhost/books \
+  -H "Authorization: InvalidFormat"
+```
+**Expected**: 401 Unauthorized
+
+### Different User Scenarios
+
+#### Scenario A: Admin accessing books
+```bash
+curl -s http://localhost/books \
+  -H "Authorization: Bearer superadmin:admin:secret-token" | jq
+```
+**Result**:
+```json
+{
+  "access_level": "admin",
+  "auth_time": "2025-12-17T...",
+  "books": [ /* all 6 books */ ],
+  "role": "admin",
+  "total_books": 6,
+  "user_id": "superadmin"
+}
 ```
 
-**Expected**: `401 Unauthorized`
+#### Scenario B: Regular user accessing books
+```bash
+curl -s http://localhost/books \
+  -H "Authorization: Bearer john:user:secret-token" | jq
+```
+**Result**:
+```json
+{
+  "access_level": "user",
+  "auth_time": "2025-12-17T...",
+  "books": [ /* 4 books: public + user */ ],
+  "role": "user",
+  "total_books": 4,
+  "user_id": "john"
+}
+```
 
-### Test Different Roles
+#### Scenario C: Guest accessing books
+```bash
+curl -s http://localhost/books \
+  -H "Authorization: Bearer visitor:guest:secret-token" | jq
+```
+**Result**:
+```json
+{
+  "access_level": "guest",
+  "auth_time": "2025-12-17T...",
+  "books": [ /* 2 books: public only */ ],
+  "role": "guest",
+  "total_books": 2,
+  "user_id": "visitor"
+}
+```
+
+### Access Logging
+
+#### View all access logs
+```bash
+curl -s http://localhost/access-logs | jq
+```
+**Result**:
+```json
+{
+  "logs": [
+    {
+      "forwarded_for": "172.18.0.1",
+      "method": "GET",
+      "role": "admin",
+      "timestamp": "2025-12-17T10:30:00Z",
+      "uri": "/books",
+      "user_id": "admin"
+    }
+  ],
+  "total_requests": 1
+}
+```
+
+#### Count total requests
+```bash
+curl -s http://localhost/access-logs | jq '.total_requests'
+```
+
+#### Filter logs by user
+```bash
+curl -s http://localhost/access-logs | jq '.logs[] | select(.user_id == "admin")'
+```
+
+### Health Checks
 
 ```bash
-# Admin
-curl http://localhost/books \
+# Auth service health
+curl http://localhost:8081/health
+
+# Book service health
+curl http://localhost:8082/health
+```
+
+### Response Analysis
+
+#### Get only book count
+```bash
+curl -s http://localhost/books \
   -H "Authorization: Bearer admin:admin:secret-token" | jq '.total_books'
-# Output: 6
+```
 
-# User
-curl http://localhost/books \
+#### Get only book titles
+```bash
+curl -s http://localhost/books \
+  -H "Authorization: Bearer admin:admin:secret-token" | jq '.books[].title'
+```
+
+#### Get books by access level
+```bash
+# Public books
+curl -s http://localhost/books \
+  -H "Authorization: Bearer admin:admin:secret-token" | jq '.books[] | select(.access == "public")'
+
+# User books
+curl -s http://localhost/books \
+  -H "Authorization: Bearer admin:admin:secret-token" | jq '.books[] | select(.access == "user")'
+
+# Admin books
+curl -s http://localhost/books \
+  -H "Authorization: Bearer admin:admin:secret-token" | jq '.books[] | select(.access == "admin")'
+```
+
+### Performance Testing
+
+#### Sequential requests
+```bash
+for i in {1..10}; do
+  curl -s http://localhost/books \
+    -H "Authorization: Bearer user$i:user:secret-token" | jq '.user_id'
+done
+```
+
+#### Check access log count after multiple requests
+```bash
+# Make 5 requests
+for i in {1..5}; do
+  curl -s http://localhost/books \
+    -H "Authorization: Bearer user$i:admin:secret-token" > /dev/null
+done
+
+# Check total count
+curl -s http://localhost/access-logs | jq '.total_requests'
+```
+
+### Comparison Tests
+
+#### Compare book count across roles
+```bash
+echo "Admin books:"
+curl -s http://localhost/books \
+  -H "Authorization: Bearer admin:admin:secret-token" | jq '.total_books'
+
+echo "User books:"
+curl -s http://localhost/books \
   -H "Authorization: Bearer user:user:secret-token" | jq '.total_books'
-# Output: 4
 
-# Guest
-curl http://localhost/books \
+echo "Guest books:"
+curl -s http://localhost/books \
   -H "Authorization: Bearer guest:guest:secret-token" | jq '.total_books'
-# Output: 2
 ```
 
-## Logs
+### Quick Test Sequence
 
-### View Auth Service Logs
+Run these commands in order to test the complete flow:
 
 ```bash
-docker-compose logs -f auth-service
+# 1. Start services
+make up
+
+# 2. Wait for services to start
+sleep 5
+
+# 3. Test without auth (should fail)
+curl -v http://localhost/books
+
+# 4. Test with admin (should see 6 books)
+curl -s http://localhost/books -H "Authorization: Bearer admin:admin:secret-token" | jq '.total_books'
+
+# 5. Test with user (should see 4 books)
+curl -s http://localhost/books -H "Authorization: Bearer user:user:secret-token" | jq '.total_books'
+
+# 6. Test with guest (should see 2 books)
+curl -s http://localhost/books -H "Authorization: Bearer guest:guest:secret-token" | jq '.total_books'
+
+# 7. Check access logs (should show 3 successful requests)
+curl -s http://localhost/access-logs | jq '.total_requests'
+
+# 8. Open Traefik dashboard
+open http://localhost:8080
 ```
 
-### View Book Service Logs
+## API Reference
+
+### Ports
+
+- **80** - Traefik (main proxy)
+- **8080** - Traefik Dashboard
+- **8081** - Auth Service (direct access)
+- **8082** - Book Service (direct access)
+
+### Auth Service Endpoints
+
+#### POST /auth (ForwardAuth Endpoint)
+- **Purpose**: Validate authentication token
+- **Headers**: Authorization: Bearer <userID>:<role>:<token>
+- **Success Response**: 200 OK with enriched headers
+  - X-User-ID: <userID>
+  - X-User-Role: <role>
+  - X-Auth-Time: <timestamp>
+- **Failure Response**: 401 Unauthorized
+
+#### GET /access-logs
+- **Purpose**: View access logs
+- **Response**: JSON with logs array and total_requests count
+
+#### GET /health
+- **Purpose**: Health check
+- **Response**: "Auth service is healthy"
+
+### Book Service Endpoints
+
+#### GET /books
+- **Purpose**: Get filtered books based on role
+- **Headers** (from Traefik):
+  - X-User-ID: <userID>
+  - X-User-Role: <role>
+  - X-Auth-Time: <timestamp>
+- **Response**: JSON with user info and filtered books
+
+#### GET /health
+- **Purpose**: Health check
+- **Response**: "Book service is healthy"
+
+### Traefik Dashboard
+
+#### Access
+- **URL**: http://localhost:8080
+- **Features**: View routers, middlewares, services
+
+#### API Endpoints (if enabled)
+```bash
+# Get routers
+curl http://localhost:8080/api/http/routers
+
+# Get middlewares
+curl http://localhost:8080/api/http/middlewares
+
+# Get services
+curl http://localhost:8080/api/http/services
+```
+
+## Make Commands
 
 ```bash
-docker-compose logs -f book-service
+make up           # Start services
+make down         # Stop services
+make logs         # View all logs
+make test         # Run integration tests
+make test-unit    # Run unit tests
+make test-all     # Run all tests
+make test-auth    # Test auth service only
+make test-book    # Test book service only
+make admin        # Test admin access
+make user         # Test user access
+make guest        # Test guest access
+make logs-auth    # View auth service logs
+make logs-book    # View book service logs
+make logs-traefik # View Traefik logs
 ```
-
-### View Traefik Logs
-
-```bash
-docker-compose logs -f traefik
-```
-
-## Security Considerations
-
-This is a POC for demonstration purposes. In production:
-
-1. **Use proper token validation**: Implement JWT or OAuth2 tokens
-2. **Use HTTPS**: Enable TLS/SSL for all communications
-3. **Secure the services**: Don't expose services directly, only through Traefik
-4. **Store secrets securely**: Use environment variables or secret management systems
-5. **Implement rate limiting**: Protect against brute force attacks
-6. **Add proper logging**: Use structured logging and centralized log management
-7. **Network segmentation**: Use Docker networks properly to isolate services
 
 ## Troubleshooting
 
-### Services not starting
+### Services won't start
 
 ```bash
-# Check if ports are available
-lsof -i :80
-lsof -i :8080
-lsof -i :8081
-lsof -i :8082
+# Check ports
+lsof -i :80 :8080 :8081 :8082
 
-# Rebuild images
-docker-compose build --no-cache
-docker-compose up
+# Rebuild
+docker-compose down && docker-compose up --build
 ```
 
-### Authentication failing
+### Authentication fails
 
-- Check auth service logs: `docker-compose logs auth-service`
 - Verify token format: `Bearer <userID>:<role>:secret-token`
-- Ensure token is `secret-token`
+- Token must be exactly: `secret-token`
+- Check auth service logs: `make logs-auth`
 
-### Books not filtered correctly
+### Books not filtered
 
-- Check if headers are being passed: Look at book service logs
-- Verify Traefik configuration: Check `authResponseHeaders` in dynamic-config.yml
+- Check enriched headers in book service logs
+- Verify Traefik config: `authResponseHeaders` in `dynamic-config.yml`
 
-## License
+### Docker logs
 
-This is a proof of concept for educational purposes.
+```bash
+# View all logs
+docker-compose logs -f
+
+# View auth service logs only
+docker-compose logs -f auth-service
+
+# View book service logs only
+docker-compose logs -f book-service
+
+# View Traefik logs only
+docker-compose logs -f traefik
+```
+
+## Security Notes
+
+⚠️ **This is a POC for demonstration only. For production:**
+
+- Use proper JWT/OAuth2 tokens instead of simple strings
+- Enable HTTPS/TLS for all communications
+- Don't expose services directly (only through Traefik)
+- Use secret management for tokens
+- Implement rate limiting
+- Add proper logging and monitoring
+- Protect accessLogs with mutex for concurrent access
+- Add authentication to Traefik dashboard
+- Implement proper error handling
+- Use database for access logs instead of in-memory storage
+- Add request validation and sanitization
+- Implement CORS policies
+- Add audit logging
+
+## Resources
+
+- [Traefik Forward Auth Documentation](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/forwardauth/)
+- [Docker Documentation](https://docs.docker.com/)
+- [Go Documentation](https://golang.org/doc/)
+
+---
+
+**Note**: This is a proof of concept for educational purposes. Do not use in production without implementing proper security measures.
