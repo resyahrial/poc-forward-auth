@@ -1,0 +1,43 @@
+http:
+  routers:
+    # Router for book service - protected by forward auth
+    book-service:
+      rule: "PathPrefix(`/books`)"
+      service: book-service
+      middlewares:
+        - auth-middleware
+      entryPoints:
+        - web
+
+    # Router for auth service - direct access for auth endpoint
+    auth-service:
+      rule: "PathPrefix(`/auth`) || PathPrefix(`/access-logs`)"
+      service: auth-service
+      entryPoints:
+        - web
+
+  middlewares:
+    # Forward auth middleware configuration
+    auth-middleware:
+      forwardAuth:
+        address: "http://auth-service:8081/auth"
+        # Copy these headers from auth service response to the forwarded request
+        authResponseHeaders:
+          - "X-User-ID"
+          - "X-User-Role"
+          - "X-Auth-Time"
+        # Preserve request method when forwarding to auth service
+        preserveRequestMethod: true
+        # Trust X-Forwarded-* headers
+        trustForwardHeader: false
+
+  services:
+    book-service:
+      loadBalancer:
+        servers:
+          - url: "http://book-service:8082"
+
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "http://auth-service:8081"

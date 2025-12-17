@@ -1,0 +1,40 @@
+# .gitignore for Traefik Forward Auth POC
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+auth-service/auth-service
+book-service/book-service
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Docker
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

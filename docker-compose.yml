@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    ports:
+      - "80:80"
+      - "8080:8080"  # Traefik Dashboard
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml
+      - ./traefik/dynamic-config.yml:/etc/traefik/dynamic-config.yml
+    networks:
+      - poc-network
+    depends_on:
+      - auth-service
+      - book-service
+
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    ports:
+      - "8081:8081"
+    networks:
+      - poc-network
+    environment:
+      - SERVICE_NAME=auth-service
+
+  book-service:
+    build:
+      context: ./book-service
+      dockerfile: Dockerfile
+    container_name: book-service
+    ports:
+      - "8082:8082"
+    networks:
+      - poc-network
+    environment:
+      - SERVICE_NAME=book-service
+
+networks:
+  poc-network:
+    driver: bridge
