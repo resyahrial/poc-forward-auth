@@ -5,6 +5,7 @@ http:
       rule: "PathPrefix(`/books`)"
       service: book-service
       middlewares:
+        - cors-middleware
         - auth-middleware
       entryPoints:
         - web
@@ -13,6 +14,8 @@ http:
     auth-service:
       rule: "PathPrefix(`/auth`) || PathPrefix(`/access-logs`)"
       service: auth-service
+      middlewares:
+        - cors-middleware
       entryPoints:
         - web
 
@@ -28,6 +31,30 @@ http:
           - "X-Auth-Time"
         # Trust X-Forwarded-* headers
         trustForwardHeader: false
+
+    # CORS middleware configuration
+    cors-middleware:
+      headers:
+        accessControlAllowMethods:
+          - "GET"
+          - "POST"
+          - "PUT"
+          - "DELETE"
+          - "OPTIONS"
+        accessControlAllowHeaders:
+          - "Content-Type"
+          - "Authorization"
+          - "X-User-ID"
+          - "X-User-Role"
+          - "X-Auth-Time"
+        accessControlExposeHeaders:
+          - "X-User-ID"
+          - "X-User-Role"
+          - "X-Auth-Time"
+        accessControlAllowOriginList:
+          - "*"
+        accessControlMaxAge: 3600
+        addVaryHeader: true
 
   services:
     book-service:
